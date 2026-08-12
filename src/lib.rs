@@ -32,7 +32,9 @@ mod analytics;
 mod app;
 mod assets;
 mod browser;
+mod cli;
 mod computer_use;
+mod control;
 pub mod daemon;
 mod driver;
 mod input;
@@ -185,6 +187,17 @@ impl WakuApplicationExt for Application {
 }
 
 pub fn run() {
+    let args: Vec<String> = std::env::args().collect();
+    if cli::wants_cli(&args) {
+        match cli::main() {
+            Ok(()) => return,
+            Err(error) => {
+                eprintln!("error: {error}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     let daemon = crate::daemon::start_process()
         .unwrap_or_else(|error| panic!("failed to start Waku daemon: {error:#}"));
     gpui_platform::application()

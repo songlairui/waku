@@ -71,6 +71,24 @@ Release apps bundle and sign `waku-daemon`. Development keeps the daemon at
 `target/debug/waku-debug-daemon`, allowing provider-only edits to rebuild and
 replace the daemon without relaunching Waku Debug.
 
+## CLI
+
+The `waku` binary also exposes a local control surface for projects and sessions
+(useful for agents and scripts). When the desktop app is running, commands talk
+to it over a Unix socket beside the app database; otherwise they start a
+short-lived daemon and go through the same RPC the desktop uses.
+
+```sh
+waku list-projects
+waku new-project --path ~/code/my-app --name my-app
+waku list-sessions --project my-app
+waku new-session --project my-app --provider pi --model ...
+waku open <project-or-session>
+waku link-session --session <session-id> --project my-app
+```
+
+See `waku --help` and each subcommand's `--help` for flags.
+
 ## Development
 
 Development is supported on macOS and Linux and requires

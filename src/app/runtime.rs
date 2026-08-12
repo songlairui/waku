@@ -3203,6 +3203,7 @@ impl Waku {
             | self.drain_computer_permission_events()
             | self.drain_plan_usage_events()
             | self.drain_task_state_sync_events(cx)
+            | self.drain_control_events(cx)
         {
             cx.notify();
         }

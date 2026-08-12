@@ -1202,6 +1202,8 @@ pub struct Waku {
     event_wake_tx: smol::channel::Sender<()>,
     task_state_sync_tx: Sender<Result<RemoteTaskStateSnapshot, String>>,
     task_state_sync_events: Receiver<Result<RemoteTaskStateSnapshot, String>>,
+    /// CLI/app-control requests arriving on `control.sock`.
+    control_events: Receiver<crate::control::PendingControl>,
     runtimes: HashMap<Uuid, SessionRuntime>,
     runtime_attach_pending: HashSet<Uuid>,
     runtime_attach_misses: HashMap<Uuid, u8>,
@@ -2046,6 +2048,8 @@ impl Waku {
         let (plan_usage_tx, plan_usage_events) = unbounded();
         let (event_wake_tx, event_wake_events) = smol::channel::bounded(1);
         let (task_state_sync_tx, task_state_sync_events) = unbounded();
+        let (control_tx, control_events) = unbounded::<crate::control::PendingControl>();
+        crate::control::spawn_server(store.path().to_path_buf(), control_tx, event_wake_tx.clone());
         #[cfg(target_os = "macos")]
         {
             let computer_permission_tx = computer_permission_tx.clone();
@@ -2644,6 +2648,7 @@ impl Waku {
                 event_wake_tx,
                 task_state_sync_tx,
                 task_state_sync_events,
+                control_events,
                 runtimes: HashMap::new(),
                 runtime_attach_pending: HashSet::new(),
                 runtime_attach_misses: HashMap::new(),
