@@ -506,7 +506,7 @@ impl PersistedState {
         self.selected_session.filter(|selected| {
             self.sessions
                 .iter()
-                .any(|session| session.id == *selected && session.has_started())
+                .any(|session| session.id == *selected && session.should_persist())
         })
     }
 
@@ -1221,6 +1221,7 @@ impl StateStore {
         session.context_window = stored.context_window;
         session.context_usage = stored.context_usage;
         session.runtime_event_cursor = stored.runtime_event_cursor;
+        session.persist_draft = stored.persist_draft;
 
         let mut statement = connection
             .prepare(
@@ -1324,8 +1325,9 @@ impl StateStore {
             storage.saved_projects = projects_fingerprint;
         }
 
-        // Only sessions the app reported as changed are written. A draft that
-        // has not started yet owns no row, so it counts as removed until it does.
+        // Only sessions that should persist are written. GUI drafts that have
+        // not started yet own no row until the first message; CLI-created
+        // drafts set `persist_draft` so they survive save/relaunch.
         let mut live = HashSet::with_capacity(state.sessions.len());
         // Applied only after the commit below, so a transaction that rolls back
         // does not leave this connection believing rows it never wrote are on
@@ -1334,7 +1336,7 @@ impl StateStore {
         for session in state
             .sessions
             .iter()
-            .filter(|session| session.has_started())
+            .filter(|session| session.should_persist())
         {
             live.insert(session.id);
             // A skeleton's empty transcript means "not fetched", not "empty".
@@ -1518,6 +1520,7 @@ fn session_skeleton(row: SessionColumns) -> Option<AgentSession> {
         turns: Vec::new(),
         queued_messages: Vec::new(),
         detail_loaded: false,
+        persist_draft: false,
     })
 }
 
@@ -3346,6 +3349,35 @@ mod tests {
         assert!(restored.sessions.is_empty());
         assert!(restored.selected_session.is_none());
         assert_eq!(restored.selected_project, state.selected_project);
+        fs::remove_dir_all(directory).ok();
+    }
+
+    #[test]
+    fn persist_draft_sessions_survive_save_and_reload() {
+        let directory = temporary_directory();
+        let store = store_in(&directory);
+        let mut state = PersistedState::empty();
+        let project = Project::from_path(PathBuf::from("/tmp/cli-project"));
+        let project_id = project.id;
+        state.projects.push(project);
+        let mut session = state.new_session(project_id, ProviderKind::Pi);
+        session.persist_draft = true;
+        let session_id = session.id;
+        state.selected_project = Some(project_id);
+        state.selected_session = Some(session_id);
+        state.push_session(session);
+
+        store.save(&mut state).unwrap();
+        let mut restored = store_in(&directory).load().unwrap();
+        assert_eq!(restored.sessions.len(), 1);
+        assert_eq!(restored.sessions[0].id, session_id);
+        store_in(&directory)
+            .hydrate(&mut restored.sessions[0])
+            .unwrap();
+        assert_eq!(restored.sessions[0].provider, ProviderKind::Pi);
+        assert!(restored.sessions[0].persist_draft);
+        assert!(!restored.sessions[0].has_started());
+        assert_eq!(restored.selected_session, Some(session_id));
         fs::remove_dir_all(directory).ok();
     }
 

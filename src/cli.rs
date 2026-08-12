@@ -164,13 +164,21 @@ fn run_offline(request: ControlRequest) -> Result<ControlResponse, String> {
         .map_err(|error| format!("start daemon: {error:#}"))?;
     let store = StateStore::remote(daemon.clone());
     let workspace = waku_client::WorkspaceClient::new(daemon.client());
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let mut state = store.load_or_fresh(cwd);
+    let mut state = load_cli_state(&store);
     let data = apply_to_state(&mut state, request, Some(&workspace))?;
     store
         .save(&mut state)
         .map_err(|error| format!("save state: {error}"))?;
     Ok(ControlResponse::ok_data(data))
+}
+
+/// Load persisted state for CLI use without inventing a runtime draft session.
+fn load_cli_state(store: &StateStore) -> PersistedState {
+    let mut state = store.load().unwrap_or_else(|_| PersistedState::empty());
+    for session in &mut state.sessions {
+        let _ = store.hydrate(session);
+    }
+    state
 }
 
 /// Apply a control request to persisted state. Shared by the offline CLI path
@@ -201,10 +209,7 @@ pub fn apply_to_state(
             let id = project.id;
             let json = project_json(&project);
             state.projects.push(project);
-            let session = state.new_session(id, state.last_provider);
             state.selected_project = Some(id);
-            state.selected_session = Some(session.id);
-            state.push_session(session);
             Ok(json)
         }
         ControlRequest::ListSessions { project } => {
@@ -235,10 +240,16 @@ pub fn apply_to_state(
                 Some(value) => resolve_project_id(state, &value)?,
                 None => ensure_projectless_project(state, workspace)?,
             };
+            // Reuse an unstarted draft only when it matches the requested
+            // provider. An explicit `--provider` that differs always creates.
             if let Some(existing) = state
                 .sessions
                 .iter()
-                .find(|session| session.project_id == project_id && !session.has_started())
+                .find(|session| {
+                    session.project_id == project_id
+                        && !session.has_started()
+                        && session.provider == provider
+                })
                 .map(|session| session.id)
             {
                 state.selected_project = Some(project_id);
@@ -251,6 +262,7 @@ pub fn apply_to_state(
                 return Ok(session_json(state, session));
             }
             let mut session = state.new_session(project_id, provider);
+            session.persist_draft = true;
             if let Some(model) = model.filter(|value| !value.trim().is_empty()) {
                 session.model = Some(model);
             }
@@ -404,6 +416,7 @@ fn session_json_with_prompt(
 mod tests {
     use super::*;
     use crate::control::ControlRequest;
+    use crate::model::ProviderKind;
 
     #[test]
     fn new_project_and_list_round_trip() {
@@ -420,8 +433,77 @@ mod tests {
         )
         .unwrap();
         assert_eq!(created["name"], "Demo");
+        assert!(state.sessions.is_empty(), "new-project must not create a session");
         let listed = apply_to_state(&mut state, ControlRequest::ListProjects, None).unwrap();
         assert_eq!(listed.as_array().unwrap().len(), 1);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn new_session_respects_provider_and_persists_draft() {
+        let mut state = PersistedState::empty();
+        let path = std::env::temp_dir().join(format!("waku-cli-sess-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&path).unwrap();
+        apply_to_state(
+            &mut state,
+            ControlRequest::NewProject {
+                name: Some("Demo".into()),
+                path: path.clone(),
+            },
+            None,
+        )
+        .unwrap();
+        let created = apply_to_state(
+            &mut state,
+            ControlRequest::NewSession {
+                project: Some("Demo".into()),
+                provider: Some("pi".into()),
+                model: None,
+                prompt: None,
+            },
+            None,
+        )
+        .unwrap();
+        assert_eq!(created["provider"], "pi");
+        assert_eq!(state.sessions.len(), 1);
+        assert!(state.sessions[0].persist_draft);
+        assert_eq!(state.sessions[0].provider, ProviderKind::Pi);
+        let session_id = state.sessions[0].id;
+
+        // Same provider draft is reused.
+        let again = apply_to_state(
+            &mut state,
+            ControlRequest::NewSession {
+                project: Some("Demo".into()),
+                provider: Some("pi".into()),
+                model: None,
+                prompt: None,
+            },
+            None,
+        )
+        .unwrap();
+        assert_eq!(again["id"], session_id.to_string());
+        assert_eq!(state.sessions.len(), 1);
+
+        // Different provider creates a second draft.
+        let other = apply_to_state(
+            &mut state,
+            ControlRequest::NewSession {
+                project: Some("Demo".into()),
+                provider: Some("codex".into()),
+                model: None,
+                prompt: None,
+            },
+            None,
+        )
+        .unwrap();
+        assert_eq!(other["provider"], "codex");
+        assert_eq!(state.sessions.len(), 2);
+
+        let listed =
+            apply_to_state(&mut state, ControlRequest::ListSessions { project: None }, None)
+                .unwrap();
+        assert_eq!(listed.as_array().unwrap().len(), 2);
         let _ = std::fs::remove_dir_all(path);
     }
 
@@ -446,6 +528,17 @@ mod tests {
             ControlRequest::NewProject {
                 name: Some("B".into()),
                 path: b.clone(),
+            },
+            None,
+        )
+        .unwrap();
+        apply_to_state(
+            &mut state,
+            ControlRequest::NewSession {
+                project: Some("A".into()),
+                provider: Some("pi".into()),
+                model: None,
+                prompt: None,
             },
             None,
         )

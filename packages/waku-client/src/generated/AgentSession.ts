@@ -67,4 +67,11 @@ provider_session_id?: string | null,
  * Not stored in the session JSON — these are rows in the `messages`
  * table, reattached when the session is hydrated.
  */
-messages: Array<Message>, transcript_blocks: Array<TranscriptBlock>, turns: Array<AgentTurn>, queued_messages?: Array<QueuedMessage>, };
+messages: Array<Message>, transcript_blocks: Array<TranscriptBlock>, turns: Array<AgentTurn>, queued_messages?: Array<QueuedMessage>,
+/**
+ * When true, persist this session even before it has started.
+ *
+ * The GUI keeps blank drafts in memory only. The CLI sets this so an
+ * explicitly created session survives `save` / relaunch.
+ */
+persist_draft?: boolean, };
